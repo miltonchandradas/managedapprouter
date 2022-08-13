@@ -1,0 +1,207 @@
+_schema-version: '3.2'
+ID: managedapprouter
+version: 0.0.1
+
+parameters:
+  enable-parallel-deployments: true
+  deploy_mode: html5-repo
+
+build-parameters:
+  before-all:
+    - builder: custom
+      commands:
+        - npm install --production
+        - npx -p @sap/cds-dk cds build --production
+#        - npx rimraf gen/db/src/gen/data # uncomment this line to prevent loading of initial data which is only relevant for dev/test deployments 
+#        - npx rimraf gen/db/src/gen/csv  # uncomment this line unless db/csv folder has been used for config/control table data which is entirely managed by the developer and never changed by the app
+
+modules:
+  # ---------------- DATABASE DEPLOYER MODULE ------------------
+  - name: managedapprouter-db-deployer
+  # ------------------------------------------------------------
+    type: hdb
+    path: gen/db
+    build-parameters:
+      ignore:
+        - default-*.json
+        - .env
+        - "*node_modules*"
+    parameters:
+      buildpack: nodejs_buildpack
+      memory: 256M
+      disk-quota: 1024M
+    requires:
+      - name: managedapprouter-uaa
+      - name: managedapprouter-db
+
+  # --------------------- SERVER MODULE ------------------------
+  - name: managedapprouter-srv
+  # ------------------------------------------------------------
+    type: nodejs
+    path: gen/srv
+    build-parameters:
+      ignore:
+        - default-*.json
+        - .env
+        - "*node_modules*"
+    parameters:
+      buildpack: nodejs_buildpack
+      memory: 512M
+      disk-quota: 1024M
+    requires:
+      - name: managedapprouter-uaa
+      - name: managedapprouter-db
+    provides:
+      - name: srv-api
+        properties:
+          srv-url: ${default-url}
+
+
+
+
+  # ----------- HTML5 APP REPOSITORY APP HTML5 MODULE ----------
+  - name: managedapprouter-html5
+  # ------------------------------------------------------------
+    type: html5
+    path: app/html5
+    build-parameters:
+      build-result: dist
+      builder: custom
+      commands:
+        - npm install
+        - npm run build:cf
+      supported-platforms: []
+
+  # ----------- HTML5 APP REPOSITORY APP FIORI MODULE ----------
+  - name: managedapprouter-fiori
+  # ------------------------------------------------------------
+    type: html5
+    path: app/fiori
+    build-parameters:
+      build-result: dist
+      builder: custom
+      commands:
+        - npm install
+        - npm run build:cf
+      supported-platforms: []
+
+  # ----------- HTML5 APP REPOSITORY DEPLOYER MODULE -----------
+  - name: managedapprouter-ui-deployer
+  # ------------------------------------------------------------
+    type: com.sap.application.content
+    path: .
+    requires:
+      - name: managedapprouter-html5repo
+        parameters:
+          content-target: true
+    build-parameters:
+      build-result: gen/app
+      requires:
+        - artifacts:
+            - html5-content.zip
+          name: managedapprouter-html5
+          target-path: gen/app
+        - artifacts:
+            - fiori-content.zip
+          name: managedapprouter-fiori
+          target-path: gen/app
+
+  # ----- HTML5 APP REPOSITORY DESTINATION CONTENT MODULE ------
+  - name: managedapprouter-dest-content
+  # ------------------------------------------------------------
+    type: com.sap.application.content
+    requires:
+      - name: managedapprouter-uaa
+        parameters:
+          service-key:
+            name: managedapprouter-uaa-sk
+      - name: managedapprouter-dest
+        parameters:
+          content-target: true
+      - name: managedapprouter-html5repo
+        parameters:
+          service-key:
+            name: managedapprouter-html5repo-sk
+    parameters:
+      content:
+        instance:
+          existing_destinations_policy: ignore
+          destinations:
+            - Name: managedapprouter-service-managedapprouter-uaa
+              ServiceInstanceName: managedapprouter-uaa
+              ServiceKeyName: managedapprouter-uaa-sk
+              Authentication: OAuth2UserTokenExchange
+              sap.cloud.service: managedapprouter-service
+            - Name: managedapprouter-service-managedapprouter-html5repo
+              ServiceInstanceName: managedapprouter-html5repo
+              ServiceKeyName: managedapprouter-html5repo-sk
+              sap.cloud.service: managedapprouter-service
+    build-parameters:
+      no-source: true
+
+resources:
+  # ----------------------- UAA SERVICE ------------------------
+  - name: managedapprouter-uaa
+  # ------------------------------------------------------------
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: xsuaa
+      service-plan: application
+      path: ./xs-security.json
+
+  # -------------------- DESTINATION SERVICE -------------------
+  - name: managedapprouter-dest
+  # ------------------------------------------------------------
+    type: org.cloudfoundry.managed-service
+    requires:
+      - name: srv-api
+    parameters:
+      service: destination
+      service-plan: lite
+      config:
+        HTML5Runtime_enabled: true
+        init_data:
+          instance:
+            existing_destinations_policy: ignore
+            destinations:
+              - Name: managedapprouter-srv
+                Description: Managed approuter - Server Module
+                URL: ~{srv-api/srv-url}
+                Type: HTTP
+                ProxyType: Internet
+                Authentication: NoAuthentication
+                HTML5.DynamicDestination: true
+                HTML5.ForwardAuthToken: true
+              - Name: ui5
+                Description: SAPUI5
+                URL: https://ui5.sap.com
+                Type: HTTP
+                ProxyType: Internet
+                Authentication: NoAuthentication
+
+  # ----------- HTML5 APP REPOSITORY HOSTING SERVICE -----------
+  - name: managedapprouter-html5repo
+  # ------------------------------------------------------------
+    type: org.cloudfoundry.managed-service
+    parameters:
+      service: html5-apps-repo
+      service-plan: app-host
+
+
+
+
+
+  # ------------------- HDI CONTAINER SERVICE ------------------
+  - name: managedapprouter-db
+  # ------------------------------------------------------------
+    type: com.sap.xs.hdi-container
+    parameters:
+      service: hana
+      service-plan: hdi-shared
+    properties:
+      hdi-service-name: ${service-name}
+
+
+
+
+
